@@ -13,6 +13,7 @@ defmodule ClusterEC2.Strategy.Tags do
             config: [
               ec2_tagname: "mytag",
               ec2_tagvalue: "tagvalue"
+              region: "eu-central-1",
               app_prefix: "app"
               ip_type: :private
               polling_interval: 10_000]]]
@@ -23,6 +24,7 @@ defmodule ClusterEC2.Strategy.Tags do
   | --- | -------- | ----------- |
   | `:ec2_tagname` | yes | Name of the EC2 instance tag to look for. |
   | `:ec2_tagvalue` | no | Can be passed a static value (string), a 0-arity function, or a 1-arity function (which will be passed the value of `:ec2_tagname` at invocation). |
+  | `:region` | no | Defaults to running instance region. |
   | `:app_prefix` | no | Will be prepended to the node's private IP address to create the node name. |
   | `:ip_type` | no | One of :private or :public, defaults to :private |
   | `:polling_interval` | no | Number of milliseconds to wait between polls to the EC2 api. Defaults to 5_000 |
@@ -116,14 +118,13 @@ defmodule ClusterEC2.Strategy.Tags do
 
   @spec get_nodes(State.t()) :: {:ok, [atom()]} | {:error, []}
   defp get_nodes(%State{topology: topology, config: config}) do
-    instance_id = ClusterEC2.local_instance_id()
-    region = ClusterEC2.instance_region()
+    region = Keyword.get(config, :region, &ClusterEC2.instance_region/0)
     tag_name = Keyword.fetch!(config, :ec2_tagname)
-    tag_value = Keyword.get(config, :ec2_tagvalue, &local_instance_tag_value(&1, instance_id, region))
+    tag_value = Keyword.get(config, :ec2_tagvalue, &local_instance_tag_value(&1, region))
     app_prefix = Keyword.get(config, :app_prefix, "app")
 
     cond do
-      tag_name != nil and tag_value != nil and app_prefix != nil and instance_id != "" and region != "" ->
+      tag_name != nil and tag_value != nil and app_prefix != nil and region != "" ->
         params = [filters: ["tag:#{tag_name}": fetch_tag_value(tag_name, tag_value)]]
         request = ExAws.EC2.describe_instances(params)
         require Logger
@@ -142,10 +143,6 @@ defmodule ClusterEC2.Strategy.Tags do
             {:error, []}
         end
 
-      instance_id == "" ->
-        warn(topology, "instance id could not be fetched!")
-        {:error, []}
-
       region == "" ->
         warn(topology, "region could not be fetched!")
         {:error, []}
@@ -161,7 +158,7 @@ defmodule ClusterEC2.Strategy.Tags do
   end
 
   defp local_instance_tag_value(tag_name, instance_id, region) do
-    ExAws.EC2.describe_instances(instance_id: instance_id)
+    ExAws.EC2.describe_instances(instance_id: ClusterEC2.local_instance_id())
     |> local_instance_tags(region)
     |> Map.get(tag_name)
   end
