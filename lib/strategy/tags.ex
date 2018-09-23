@@ -157,7 +157,7 @@ defmodule ClusterEC2.Strategy.Tags do
     end
   end
 
-  defp local_instance_tag_value(tag_name, instance_id, region) do
+  defp local_instance_tag_value(tag_name, region) do
     ExAws.EC2.describe_instances(instance_id: ClusterEC2.local_instance_id())
     |> local_instance_tags(region)
     |> Map.get(tag_name)
