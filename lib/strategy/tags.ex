@@ -12,11 +12,13 @@ defmodule ClusterEC2.Strategy.Tags do
             strategy: #{__MODULE__},
             config: [
               ec2_tagname: "mytag",
-              ec2_tagvalue: "tagvalue"
+              ec2_tagvalue: "tagvalue",
               region: "eu-central-1",
-              app_prefix: "app"
-              ip_type: :private
-              polling_interval: 10_000]]]
+              app_prefix: "app",
+              ip_to_nodename: &my_nodename_func/2,
+              ip_type: :private,
+              polling_interval: 10_000]]],
+              show_debug: false
 
   ## Configuration Options
 
@@ -27,7 +29,9 @@ defmodule ClusterEC2.Strategy.Tags do
   | `:region` | no | Defaults to running instance region. |
   | `:app_prefix` | no | Will be prepended to the node's private IP address to create the node name. |
   | `:ip_type` | no | One of :private or :public, defaults to :private |
+  | `:ip_to_nodename` | no | defaults to `app_prefix@ip` but can be used to override the nodename |
   | `:polling_interval` | no | Number of milliseconds to wait between polls to the EC2 api. Defaults to 5_000 |
+  | `:show_debug` | no | True or false, whether or not to show the debug log. Defaults to true |
   """
 
   use GenServer
@@ -46,10 +50,11 @@ defmodule ClusterEC2.Strategy.Tags do
   end
 
   # libcluster ~> 3.0
+  @impl GenServer
   def init([%State{} = state]) do
     state = state |> Map.put(:meta, MapSet.new())
 
-    {:ok, state, 0}
+    {:ok, load(state)}
   end
 
   # libcluster ~> 2.0
@@ -63,17 +68,23 @@ defmodule ClusterEC2.Strategy.Tags do
       meta: MapSet.new([])
     }
 
-    {:ok, state, 0}
+    {:ok, load(state)}
   end
 
+  @impl GenServer
   def handle_info(:timeout, state) do
     handle_info(:load, state)
   end
 
-  def handle_info(
-        :load,
-        %State{topology: topology, connect: connect, disconnect: disconnect, list_nodes: list_nodes} = state
-      ) do
+  def handle_info(:load, %State{} = state) do
+    {:noreply, load(state)}
+  end
+
+  def handle_info(_, state) do
+    {:noreply, state}
+  end
+
+  defp load(%State{topology: topology, connect: connect, disconnect: disconnect, list_nodes: list_nodes} = state) do
     case get_nodes(state) do
       {:ok, new_nodelist} ->
         added = MapSet.difference(new_nodelist, state.meta)
@@ -104,16 +115,12 @@ defmodule ClusterEC2.Strategy.Tags do
           end
 
         Process.send_after(self(), :load, Keyword.get(state.config, :polling_interval, @default_polling_interval))
-        {:noreply, %{state | :meta => new_nodelist}}
+        %{state | :meta => new_nodelist}
 
       _ ->
         Process.send_after(self(), :load, Keyword.get(state.config, :polling_interval, @default_polling_interval))
-        {:noreply, state}
+        state
     end
-  end
-
-  def handle_info(_, state) do
-    {:noreply, state}
   end
 
   @spec get_nodes(State.t()) :: {:ok, [atom()]} | {:error, []}
@@ -122,20 +129,22 @@ defmodule ClusterEC2.Strategy.Tags do
     tag_name = Keyword.fetch!(config, :ec2_tagname)
     tag_value = Keyword.get(config, :ec2_tagvalue, &local_instance_tag_value(&1, region))
     app_prefix = Keyword.get(config, :app_prefix, "app")
+    ip_to_nodename = Keyword.get(config, :ip_to_nodename, &ip_to_nodename/2)
+    show_debug? = Keyword.get(config, :show_debug, true)
 
     cond do
       tag_name != nil and tag_value != nil and app_prefix != nil and region != "" ->
-        params = [filters: ["tag:#{tag_name}": fetch_tag_value(tag_name, tag_value)]]
+        params = [filters: ["tag:#{tag_name}": fetch_tag_value(tag_name, tag_value), "instance-state-name": "running"]]
         request = ExAws.EC2.describe_instances(params)
         require Logger
-        Logger.debug("#{inspect(request)}")
+        if show_debug?, do: Logger.debug("#{inspect(request)}")
 
         case ExAws.request(request, region: region) do
           {:ok, %{body: body}} ->
             resp =
               body
               |> SweetXml.xpath(ip_xpath(Keyword.get(config, :ip_type, :private)))
-              |> ip_to_nodename(app_prefix)
+              |> ip_to_nodename.(app_prefix)
 
             {:ok, MapSet.new(resp)}
 
@@ -185,7 +194,7 @@ defmodule ClusterEC2.Strategy.Tags do
     do: ~x"//DescribeInstancesResponse/reservationSet/item/instancesSet/item/privateIpAddress/text()"ls
 
   defp ip_xpath(:public),
-    do: ~x"//DescribeInstancesResponse/reservationSet/item/instancesSet/item/publicIpAddress/text()"ls
+    do: ~x"//DescribeInstancesResponse/reservationSet/item/instancesSet/item/IpAddress/text()"ls
 
   defp fetch_tag_value(_k, v) when is_function(v, 0), do: v.()
   defp fetch_tag_value(k, v) when is_function(v, 1), do: v.(k)
