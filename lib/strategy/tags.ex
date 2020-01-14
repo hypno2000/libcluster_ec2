@@ -17,8 +17,8 @@ defmodule ClusterEC2.Strategy.Tags do
               app_prefix: "app",
               ip_to_nodename: &my_nodename_func/2,
               ip_type: :private,
+              show_debug: false,
               polling_interval: 10_000]]],
-              show_debug: false
 
   ## Configuration Options
 
